@@ -47,7 +47,7 @@ ADVANCED_OBJS := $(BUILD_DIR)/boot.o $(BUILD_DIR)/kernel_advanced.o $(BUILD_DIR)
 
 # Stage 7 network kernel
 KERNEL_NETWORK := $(BUILD_DIR)/kernel_network.bin
-NETWORK_OBJS := $(BUILD_DIR)/boot.o $(BUILD_DIR)/kernel_network.o $(BUILD_DIR)/interrupt_handlers.o $(BUILD_DIR)/isr.o $(BUILD_DIR)/usermode_syscall.o $(BUILD_DIR)/usermode_syscall_handlers.o $(BUILD_DIR)/page_fault_handler.o
+NETWORK_OBJS := $(BUILD_DIR)/boot.o $(BUILD_DIR)/kernel_network.o $(BUILD_DIR)/ne2000_driver.o $(BUILD_DIR)/interrupt_handlers.o $(BUILD_DIR)/isr.o $(BUILD_DIR)/usermode_syscall.o $(BUILD_DIR)/usermode_syscall_handlers.o $(BUILD_DIR)/page_fault_handler.o
 
 # Bootloader target
 BOOTLOADER := $(BUILD_DIR)/bootloader.bin
@@ -190,6 +190,12 @@ $(BUILD_DIR)/kernel_advanced.o: $(SRC_DIR)/kernel_advanced.c
 	    -ffreestanding -fno-pie -c $< -o $@
 
 $(BUILD_DIR)/kernel_network.o: $(SRC_DIR)/kernel_network.c
+	@mkdir -p $(BUILD_DIR)
+	$(CC) -m32 -nostdlib -fno-builtin -fno-stack-protector -nostartfiles \
+	    -nodefaultlibs -Wall -Wextra -Werror -O2 -std=c11 \
+	    -ffreestanding -fno-pie -c $< -o $@
+
+$(BUILD_DIR)/ne2000_driver.o: $(SRC_DIR)/ne2000_driver.c
 	@mkdir -p $(BUILD_DIR)
 	$(CC) -m32 -nostdlib -fno-builtin -fno-stack-protector -nostartfiles \
 	    -nodefaultlibs -Wall -Wextra -Werror -O2 -std=c11 \

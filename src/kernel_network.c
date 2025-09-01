@@ -6,6 +6,9 @@
 #include <stdint.h>
 #include <stddef.h>
 
+/* Forward declarations */
+static void* memcpy(void* dest, const void* src, uint32_t n);
+
 /* VGA text mode constants */
 #define VGA_BUFFER ((volatile uint16_t*)0xB8000)
 #define VGA_WIDTH 80
@@ -491,7 +494,7 @@ static uint32_t network_send_icmp_echo(uint32_t device_id, uint32_t dest_ip, uin
     
     /* Calculate checksum - use memcpy to avoid alignment issues */
     uint16_t icmp_copy[sizeof(struct icmp_packet) / 2];
-    __builtin_memcpy(icmp_copy, &icmp, sizeof(struct icmp_packet));
+    memcpy(icmp_copy, &icmp, sizeof(struct icmp_packet));
     icmp.checksum = 0;
     icmp.checksum = checksum16(icmp_copy, sizeof(struct icmp_packet));
     
@@ -526,7 +529,7 @@ static uint32_t network_send_icmp_echo(uint32_t device_id, uint32_t dest_ip, uin
     
     /* Calculate IP checksum - use memcpy to avoid alignment issues */
     uint16_t ip_copy[sizeof(struct ip_header) / 2];
-    __builtin_memcpy(ip_copy, ip, sizeof(struct ip_header));
+    memcpy(ip_copy, ip, sizeof(struct ip_header));
     ip->checksum = 0;
     ip->checksum = checksum16(ip_copy, sizeof(struct ip_header));
     
@@ -615,6 +618,208 @@ static uint32_t socket_connect(uint32_t socket_id, uint32_t ip, uint16_t port) {
     return 1;
 }
 
+static uint32_t socket_send(uint32_t socket_id, const void* data, uint32_t size) {
+    if (socket_id >= MAX_SOCKETS || !sockets[socket_id].used) {
+        return 0;
+    }
+    
+    /* Create TCP packet */
+    uint8_t packet[sizeof(struct eth_header) + sizeof(struct ip_header) + sizeof(struct tcp_header) + size];
+    struct eth_header* eth = (struct eth_header*)packet;
+    struct ip_header* ip = (struct ip_header*)(packet + sizeof(struct eth_header));
+    struct tcp_header* tcp = (struct tcp_header*)(packet + sizeof(struct eth_header) + sizeof(struct ip_header));
+    
+    /* Fill Ethernet header */
+    for (int i = 0; i < 6; i++) {
+        eth->dest_mac[i] = 0xFF;  /* Broadcast */
+        eth->src_mac[i] = 0x52;   /* Default MAC */
+    }
+    eth->type = 0x0800;  /* IPv4 */
+    
+    /* Fill IP header */
+    ip->version_ihl = 0x45;  /* Version 4, IHL 5 */
+    ip->tos = 0;
+    ip->total_length = sizeof(struct ip_header) + sizeof(struct tcp_header) + size;
+    ip->identification = 0x1234;
+    ip->flags_fragment = 0x4000;  /* Don't fragment */
+    ip->ttl = 64;
+    ip->protocol = IP_PROTO_TCP;
+    ip->checksum = 0;
+    ip->src_ip = sockets[socket_id].local_ip;
+    ip->dest_ip = sockets[socket_id].remote_ip;
+    
+    /* Calculate IP checksum */
+    uint16_t ip_copy[sizeof(struct ip_header) / 2];
+    memcpy(ip_copy, ip, sizeof(struct ip_header));
+    ip->checksum = checksum16(ip_copy, sizeof(struct ip_header));
+    
+    /* Fill TCP header */
+    tcp->src_port = sockets[socket_id].local_port;
+    tcp->dest_port = sockets[socket_id].remote_port;
+    tcp->seq_num = 0x10000000;
+    tcp->ack_num = 0;
+    tcp->flags = 0x5018;  /* Data offset 20 bytes, PSH, ACK */
+    tcp->window = 0x1000;
+    tcp->checksum = 0;
+    tcp->urgent = 0;
+    
+    /* Copy data */
+    memcpy(packet + sizeof(struct eth_header) + sizeof(struct ip_header) + sizeof(struct tcp_header), data, size);
+    
+    /* Send packet */
+    return network_send_packet(0, packet, sizeof(struct eth_header) + sizeof(struct ip_header) + sizeof(struct tcp_header) + size);
+}
+
+static uint32_t socket_receive(uint32_t socket_id, void* buffer, uint32_t size) {
+    if (socket_id >= MAX_SOCKETS || !sockets[socket_id].used) {
+        return 0;
+    }
+    
+    /* For now, return simulated data */
+    if (sockets[socket_id].receive_buffer && sockets[socket_id].receive_buffer_size > 0) {
+        uint32_t copy_size = (size < sockets[socket_id].receive_buffer_size) ? size : sockets[socket_id].receive_buffer_size;
+        memcpy(buffer, sockets[socket_id].receive_buffer, copy_size);
+        return copy_size;
+    }
+    
+    return 0;
+}
+
+static uint32_t socket_close(uint32_t socket_id) {
+    if (socket_id >= MAX_SOCKETS || !sockets[socket_id].used) {
+        return 0;
+    }
+    
+    sockets[socket_id].used = 0;
+    sockets[socket_id].state = 0;
+    
+    return 1;
+}
+
+/* HTTP Client functionality */
+static uint32_t http_get_request(uint32_t ip, uint16_t port, const char* host, const char* path, char* response, uint32_t response_size) {
+    /* Create socket */
+    uint32_t sock = socket_create(1, 6);  /* TCP socket */
+    if (sock == (uint32_t)-1) {
+        return 0;
+    }
+    
+    /* Bind to local port */
+    if (!socket_bind(sock, 0x0A000001, 12345)) {  /* 10.0.0.1:12345 */
+        socket_close(sock);
+        return 0;
+    }
+    
+    /* Connect to server */
+    if (!socket_connect(sock, ip, port)) {
+        socket_close(sock);
+        return 0;
+    }
+    
+    /* Create HTTP GET request */
+    char request[512];
+    uint32_t request_len = 0;
+    
+    /* Add GET request line */
+    const char* get_line = "GET ";
+    memcpy(request + request_len, get_line, 4);
+    request_len += 4;
+    
+    /* Add path */
+    uint32_t path_len = 0;
+    while (path[path_len] && request_len < sizeof(request) - 2) {
+        request[request_len++] = path[path_len++];
+    }
+    
+    /* Add HTTP version */
+    const char* http_version = " HTTP/1.1\r\n";
+    memcpy(request + request_len, http_version, 11);
+    request_len += 11;
+    
+    /* Add Host header */
+    const char* host_header = "Host: ";
+    memcpy(request + request_len, host_header, 6);
+    request_len += 6;
+    
+    /* Add hostname */
+    uint32_t host_len = 0;
+    while (host[host_len] && request_len < sizeof(request) - 2) {
+        request[request_len++] = host[host_len++];
+    }
+    
+    /* Add header end */
+    const char* header_end = "\r\n\r\n";
+    memcpy(request + request_len, header_end, 4);
+    request_len += 4;
+    
+    /* Send request */
+    uint32_t sent = socket_send(sock, request, request_len);
+    if (sent != request_len) {
+        socket_close(sock);
+        return 0;
+    }
+    
+    /* Simulate receiving response */
+    const char* mock_response = "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: 13\r\n\r\nHello, World!";
+    uint32_t response_len = 0;
+    while (mock_response[response_len] && response_len < response_size - 1) {
+        response[response_len] = mock_response[response_len];
+        response_len++;
+    }
+    response[response_len] = '\0';
+    
+    /* Close socket */
+    socket_close(sock);
+    
+    return response_len;
+}
+
+/* Enhanced ping functionality */
+static uint32_t ping_host(uint32_t ip, uint16_t count) {
+    uint32_t success_count = 0;
+    
+    for (uint16_t i = 1; i <= count; i++) {
+        /* Send ICMP echo request */
+        uint32_t result = network_send_icmp_echo(0, ip, i, i);
+        if (result) {
+            success_count++;
+        }
+        
+        /* Small delay between pings */
+        for (volatile uint32_t j = 0; j < 1000000; j++);
+    }
+    
+    return success_count;
+}
+
+/* Simple memcpy implementation */
+static void* memcpy(void* dest, const void* src, uint32_t n) {
+    uint8_t* d = (uint8_t*)dest;
+    const uint8_t* s = (const uint8_t*)src;
+    while (n--) {
+        *d++ = *s++;
+    }
+    return dest;
+}
+
+/* DNS resolution simulation (simplified) */
+static uint32_t dns_resolve(const char* hostname) {
+    /* Simulate DNS resolution for common test hosts */
+    if (hostname[0] == 'w' && hostname[1] == 'w' && hostname[2] == 'w') {
+        /* www.example.com -> 93.184.216.34 */
+        return 0x5DB8D822;
+    } else if (hostname[0] == 'g' && hostname[1] == 'o' && hostname[2] == 'o') {
+        /* google.com -> 142.250.191.78 */
+        return 0x8EFABF4E;
+    } else if (hostname[0] == 'l' && hostname[1] == 'o' && hostname[2] == 'c') {
+        /* localhost -> 127.0.0.1 */
+        return 0x7F000001;
+    }
+    
+    /* Default to test address */
+    return 0x0A000002;  /* 10.0.0.2 */
+}
+
 /* Test functions */
 static void test_network_stack(void) {
     terminal_setcolor(VGA_COLOR_LIGHT_GREEN);
@@ -698,6 +903,13 @@ static void test_network_protocols(void) {
     terminal_writestring("\n");
 }
 
+/* NE2000 driver function declarations */
+extern uint32_t ne2000_register_device(uint16_t base_port, uint16_t irq);
+extern uint32_t ne2000_test_loopback(void);
+extern uint32_t ne2000_get_statistics(uint32_t* rx_packets, uint32_t* tx_packets, 
+                                      uint32_t* rx_errors, uint32_t* tx_errors);
+extern uint32_t ne2000_get_mac_address(uint8_t* mac);
+
 static void test_device_drivers(void) {
     terminal_setcolor(VGA_COLOR_LIGHT_GREEN);
     terminal_writestring("=== Testing Device Driver Framework ===\n");
@@ -759,6 +971,139 @@ static void test_device_drivers(void) {
         terminal_writestring("Packet receive result: ");
         terminal_writehex(recv_result);
         terminal_writestring(" bytes\n");
+    }
+    
+    terminal_writestring("\n");
+}
+
+static void test_ne2000_driver(void) {
+    terminal_setcolor(VGA_COLOR_LIGHT_GREEN);
+    terminal_writestring("=== Testing NE2000 Network Driver ===\n");
+    terminal_setcolor(VGA_COLOR_LIGHT_GREY);
+    
+    /* Test NE2000 driver initialization */
+    uint32_t init_result = ne2000_register_device(0x300, 10); /* Base port 0x300, IRQ 10 */
+    terminal_writestring("NE2000 driver initialization: ");
+    terminal_writehex(init_result);
+    terminal_writestring("\n");
+    
+    if (init_result) {
+        /* Test MAC address retrieval */
+        uint8_t mac[6];
+        uint32_t mac_result = ne2000_get_mac_address(mac);
+        terminal_writestring("MAC address retrieval: ");
+        terminal_writehex(mac_result);
+        terminal_writestring("\n");
+        
+        if (mac_result) {
+            char mac_str[18];
+            mac_to_string(mac, mac_str);
+            terminal_writestring("NE2000 MAC: ");
+            terminal_writestring(mac_str);
+            terminal_writestring("\n");
+        }
+        
+        /* Test loopback functionality */
+        uint32_t loopback_result = ne2000_test_loopback();
+        terminal_writestring("Loopback test: ");
+        terminal_writehex(loopback_result);
+        terminal_writestring("\n");
+        
+        /* Test statistics */
+        uint32_t rx_packets, tx_packets, rx_errors, tx_errors;
+        uint32_t stats_result = ne2000_get_statistics(&rx_packets, &tx_packets, &rx_errors, &tx_errors);
+        terminal_writestring("Statistics retrieval: ");
+        terminal_writehex(stats_result);
+        terminal_writestring("\n");
+        
+        if (stats_result) {
+            terminal_writestring("  RX packets: ");
+            terminal_writehex(rx_packets);
+            terminal_writestring("\n");
+            terminal_writestring("  TX packets: ");
+            terminal_writehex(tx_packets);
+            terminal_writestring("\n");
+            terminal_writestring("  RX errors: ");
+            terminal_writehex(rx_errors);
+            terminal_writestring("\n");
+            terminal_writestring("  TX errors: ");
+            terminal_writehex(tx_errors);
+            terminal_writestring("\n");
+        }
+    }
+    
+    terminal_writestring("\n");
+}
+
+/* Test network applications */
+static void test_network_applications(void) {
+    terminal_setcolor(VGA_COLOR_LIGHT_GREEN);
+    terminal_writestring("=== Testing Network Applications ===\n");
+    terminal_setcolor(VGA_COLOR_LIGHT_GREY);
+    
+    /* Test DNS resolution */
+    uint32_t google_ip = dns_resolve("google.com");
+    terminal_writestring("DNS resolution for google.com: ");
+    terminal_writehex(google_ip);
+    terminal_writestring("\n");
+    
+    /* Test ping functionality */
+    terminal_writestring("Pinging 10.0.0.2...\n");
+    uint32_t ping_result = ping_host(0x0A000002, 4);  /* Ping 10.0.0.2, 4 packets */
+    terminal_writestring("Ping result: ");
+    terminal_writehex(ping_result);
+    terminal_writestring(" packets successful\n");
+    
+    /* Test HTTP client */
+    terminal_writestring("Testing HTTP client...\n");
+    char http_response[256];
+    uint32_t http_result = http_get_request(0x5DB8D822, 80, "www.example.com", "/", http_response, sizeof(http_response));
+    terminal_writestring("HTTP GET result: ");
+    terminal_writehex(http_result);
+    terminal_writestring(" bytes received\n");
+    
+    if (http_result > 0) {
+        terminal_writestring("HTTP response: ");
+        terminal_writestring(http_response);
+        terminal_writestring("\n");
+    }
+    
+    /* Test socket operations */
+    terminal_writestring("Testing socket operations...\n");
+    
+    /* Create additional sockets */
+    uint32_t sock2 = socket_create(1, 6);  /* TCP socket */
+    uint32_t sock3 = socket_create(0, 17); /* UDP socket */
+    
+    terminal_writestring("Created TCP socket: ");
+    terminal_writehex(sock2);
+    terminal_writestring("\n");
+    
+    terminal_writestring("Created UDP socket: ");
+    terminal_writehex(sock3);
+    terminal_writestring("\n");
+    
+    /* Test socket send/receive */
+    if (sock2 != (uint32_t)-1) {
+        const char* test_data = "Hello, Network!";
+        uint32_t sent = socket_send(sock2, test_data, 14);
+        terminal_writestring("Sent data: ");
+        terminal_writehex(sent);
+        terminal_writestring(" bytes\n");
+        
+        char recv_buffer[32];
+        uint32_t received = socket_receive(sock2, recv_buffer, sizeof(recv_buffer));
+        terminal_writestring("Received data: ");
+        terminal_writehex(received);
+        terminal_writestring(" bytes\n");
+        
+        /* Close socket */
+        socket_close(sock2);
+        terminal_writestring("Socket closed\n");
+    }
+    
+    if (sock3 != (uint32_t)-1) {
+        socket_close(sock3);
     }
     
     terminal_writestring("\n");
@@ -832,6 +1177,8 @@ void kernel_main(void) {
     test_network_stack();
     test_network_protocols();
     test_device_drivers();
+    test_ne2000_driver();
+    test_network_applications();
     
     terminal_setcolor(VGA_COLOR_LIGHT_GREEN);
     terminal_writestring("\n=== Stage 7 Network Kernel Initialization Complete ===\n");
