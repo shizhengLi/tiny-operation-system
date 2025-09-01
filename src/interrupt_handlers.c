@@ -126,6 +126,7 @@ static inline uint8_t inb(uint16_t port) {
 /* External interrupt handlers */
 extern void keyboard_handler(void);
 extern void timer_handler(void);
+extern void syscall_handler_c(uint32_t syscall_num, uint32_t arg1, uint32_t arg2, uint32_t arg3, uint32_t arg4, uint32_t arg5);
 
 /* ISR handler function */
 void isr_handler(uint32_t interrupt_number, uint32_t error_code) {

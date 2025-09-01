@@ -33,6 +33,10 @@ OBJECTS += $(patsubst $(SRC_DIR)/%.asm, $(BUILD_DIR)/%.o, $(ASM_SOURCES))
 KERNEL_INT := $(BUILD_DIR)/kernel_interrupts.bin
 INTERRUPTS_OBJS := $(BUILD_DIR)/kernel_interrupts.o $(BUILD_DIR)/interrupt_handlers.o $(BUILD_DIR)/isr.o
 
+# Stage 4 kernel with system calls
+KERNEL_SYS := $(BUILD_DIR)/kernel_syscalls.bin
+SYSCALLS_OBJS := $(BUILD_DIR)/kernel_syscalls.o $(BUILD_DIR)/interrupt_handlers.o $(BUILD_DIR)/isr.o $(BUILD_DIR)/syscall.o $(BUILD_DIR)/syscall_handlers.o
+
 # Bootloader target
 BOOTLOADER := $(BUILD_DIR)/bootloader.bin
 
@@ -47,7 +51,7 @@ ISO_PM := $(BUILD_DIR)/tos_pm.iso
 ISO := $(BUILD_DIR)/tos.iso
 
 # Default target
-all: $(KERNEL_INT)
+all: $(KERNEL_SYS)
 
 # Build bootloader (16-bit real mode)
 $(BOOTLOADER): $(SRC_DIR)/bootloader.asm
@@ -68,6 +72,12 @@ $(KERNEL_INT): $(INTERRUPTS_OBJS)
 	@mkdir -p $(BUILD_DIR)
 	$(LD) -m elf_i386 -nostdlib -Ttext 0x10000 -o $(BUILD_DIR)/kernel_interrupts.elf $(INTERRUPTS_OBJS)
 	$(OBJCOPY) -O binary $(BUILD_DIR)/kernel_interrupts.elf $@
+
+# Build kernel with system calls (32-bit)
+$(KERNEL_SYS): $(SYSCALLS_OBJS)
+	@mkdir -p $(BUILD_DIR)
+	$(LD) -m elf_i386 -nostdlib -Ttext 0x10000 -o $(BUILD_DIR)/kernel_syscalls.elf $(SYSCALLS_OBJS)
+	$(OBJCOPY) -O binary $(BUILD_DIR)/kernel_syscalls.elf $@
 
 # Build legacy kernel (64-bit multiboot)
 $(KERNEL): $(OBJECTS) $(SRC_DIR)/linker.ld
@@ -101,6 +111,22 @@ $(BUILD_DIR)/isr.o: $(SRC_DIR)/isr.asm
 	@mkdir -p $(BUILD_DIR)
 	$(ASM) -f elf32 $< -o $@
 
+$(BUILD_DIR)/syscall.o: $(SRC_DIR)/syscall.asm
+	@mkdir -p $(BUILD_DIR)
+	$(ASM) -f elf32 $< -o $@
+
+$(BUILD_DIR)/kernel_syscalls.o: $(SRC_DIR)/kernel_syscalls.c
+	@mkdir -p $(BUILD_DIR)
+	$(CC) -m32 -nostdlib -fno-builtin -fno-stack-protector -nostartfiles \
+	    -nodefaultlibs -Wall -Wextra -Werror -O2 -std=c11 \
+	    -ffreestanding -fno-pie -c $< -o $@
+
+$(BUILD_DIR)/syscall_handlers.o: $(SRC_DIR)/syscall_handlers.c
+	@mkdir -p $(BUILD_DIR)
+	$(CC) -m32 -nostdlib -fno-builtin -fno-stack-protector -nostartfiles \
+	    -nodefaultlibs -Wall -Wextra -Werror -O2 -std=c11 \
+	    -ffreestanding -fno-pie -c $< -o $@
+
 # Create bootable ISO
 iso: $(ISO)
 $(ISO): $(KERNEL)
@@ -122,6 +148,10 @@ run-pm: $(BUILD_DIR)/floppy.img
 run-int: $(BUILD_DIR)/floppy.img
 	$(QEMU) -fda $(BUILD_DIR)/floppy.img -monitor stdio
 
+# Run kernel with system calls in QEMU
+run-sys: $(BUILD_DIR)/floppy.img
+	$(QEMU) -fda $(BUILD_DIR)/floppy.img -monitor stdio
+
 # Run protected mode ISO in QEMU
 run-iso-pm: $(ISO_PM)
 	$(QEMU) -cdrom $(ISO_PM) -monitor stdio
@@ -140,11 +170,11 @@ debug: $(KERNEL)
 	gdb -ex "target remote localhost:1234" -ex "symbol-file $(KERNEL)"
 
 # Create floppy disk image with bootloader and kernel
-floppy: $(BOOTLOADER) $(KERNEL_INT)
+floppy: $(BOOTLOADER) $(KERNEL_SYS)
 	@mkdir -p $(BUILD_DIR)
 	dd if=/dev/zero of=$(BUILD_DIR)/floppy.img bs=512 count=2880
 	dd if=$(BOOTLOADER) of=$(BUILD_DIR)/floppy.img bs=512 count=1 conv=notrunc
-	dd if=$(KERNEL_INT) of=$(BUILD_DIR)/floppy.img bs=512 count=40 seek=2 conv=notrunc
+	dd if=$(KERNEL_SYS) of=$(BUILD_DIR)/floppy.img bs=512 count=60 seek=2 conv=notrunc
 
 # Create bootable ISO for protected mode system
 iso-pm: $(ISO_PM)
@@ -186,8 +216,9 @@ init-dirs:
 # Help
 help:
 	@echo "Available targets:"
-	@echo "  all          - Build kernel with interrupts (default)"
+	@echo "  all          - Build kernel with system calls (default)"
 	@echo "  bootloader   - Build MBR bootloader"
+	@echo "  kernel-sys   - Build kernel with system calls"
 	@echo "  kernel-int   - Build kernel with interrupts"
 	@echo "  kernel-pm    - Build protected mode kernel"
 	@echo "  kernel       - Build legacy multiboot kernel"
@@ -197,6 +228,7 @@ help:
 	@echo "  run          - Run kernel in QEMU (legacy)"
 	@echo "  run-pm       - Run protected mode kernel in QEMU"
 	@echo "  run-int      - Run kernel with interrupts in QEMU"
+	@echo "  run-sys      - Run kernel with system calls in QEMU"
 	@echo "  run-iso      - Run ISO in QEMU (legacy)"
 	@echo "  run-iso-pm   - Run protected mode ISO in QEMU"
 	@echo "  debug        - Debug with GDB"
@@ -206,4 +238,4 @@ help:
 	@echo "  install-deps - Install system dependencies"
 	@echo "  help         - Show this help"
 
-.PHONY: all iso run run-iso run-int debug clean test-tools init-dirs install-deps help
+.PHONY: all iso run run-iso run-int run-sys debug clean test-tools init-dirs install-deps help
