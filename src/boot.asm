@@ -32,6 +32,7 @@ _start:
     rep stosb
     
     ; Call kernel main function
+    extern kernel_main
     call kernel_main
     
     ; Infinite loop if kernel returns

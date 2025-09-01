@@ -4,6 +4,7 @@
  */
 
 #include <stddef.h>
+#include <stdint.h>
 
 /* VGA text mode constants */
 #define VGA_WIDTH 80

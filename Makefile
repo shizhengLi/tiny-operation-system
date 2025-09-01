@@ -14,7 +14,7 @@ QEMU := qemu-system-x86_64
 
 # Flags
 CFLAGS := -m64 -nostdlib -fno-builtin -fno-stack-protector -nostartfiles -nodefaultlibs \
-          -Wall -Wextra -Werror -O2 -std=c11 -ffreestanding -mcmodel=kernel
+          -Wall -Wextra -Werror -O2 -std=c11 -ffreestanding -mcmodel=kernel -fno-pie
 LDFLAGS := -m elf_x86_64 -nostdlib -Ttext 0x100000
 ASMFLAGS := -f elf64
 
