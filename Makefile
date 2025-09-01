@@ -37,6 +37,10 @@ INTERRUPTS_OBJS := $(BUILD_DIR)/kernel_interrupts.o $(BUILD_DIR)/interrupt_handl
 KERNEL_SYS := $(BUILD_DIR)/kernel_syscalls.bin
 SYSCALLS_OBJS := $(BUILD_DIR)/kernel_syscalls.o $(BUILD_DIR)/interrupt_handlers.o $(BUILD_DIR)/isr.o $(BUILD_DIR)/syscall.o $(BUILD_DIR)/syscall_handlers.o
 
+# Stage 5 kernel with user space
+KERNEL_USER := $(BUILD_DIR)/kernel_usermode.bin
+USERMODE_OBJS := $(BUILD_DIR)/boot.o $(BUILD_DIR)/kernel_usermode.o $(BUILD_DIR)/interrupt_handlers.o $(BUILD_DIR)/isr.o $(BUILD_DIR)/usermode_syscall.o $(BUILD_DIR)/usermode_syscall_handlers.o $(BUILD_DIR)/page_fault_handler.o
+
 # Bootloader target
 BOOTLOADER := $(BUILD_DIR)/bootloader.bin
 
@@ -51,7 +55,7 @@ ISO_PM := $(BUILD_DIR)/tos_pm.iso
 ISO := $(BUILD_DIR)/tos.iso
 
 # Default target
-all: $(KERNEL_SYS)
+all: $(KERNEL_USER)
 
 # Build bootloader (16-bit real mode)
 $(BOOTLOADER): $(SRC_DIR)/bootloader.asm
@@ -78,6 +82,12 @@ $(KERNEL_SYS): $(SYSCALLS_OBJS)
 	@mkdir -p $(BUILD_DIR)
 	$(LD) -m elf_i386 -nostdlib -Ttext 0x10000 -o $(BUILD_DIR)/kernel_syscalls.elf $(SYSCALLS_OBJS)
 	$(OBJCOPY) -O binary $(BUILD_DIR)/kernel_syscalls.elf $@
+
+# Build kernel with user space (32-bit)
+$(KERNEL_USER): $(USERMODE_OBJS)
+	@mkdir -p $(BUILD_DIR)
+	$(LD) -m elf_i386 -nostdlib -Ttext 0x10000 -o $(BUILD_DIR)/kernel_usermode.elf $(USERMODE_OBJS)
+	$(OBJCOPY) -O binary $(BUILD_DIR)/kernel_usermode.elf $@
 
 # Build legacy kernel (64-bit multiboot)
 $(KERNEL): $(OBJECTS) $(SRC_DIR)/linker.ld
@@ -127,6 +137,32 @@ $(BUILD_DIR)/syscall_handlers.o: $(SRC_DIR)/syscall_handlers.c
 	    -nodefaultlibs -Wall -Wextra -Werror -O2 -std=c11 \
 	    -ffreestanding -fno-pie -c $< -o $@
 
+$(BUILD_DIR)/kernel_usermode.o: $(SRC_DIR)/kernel_usermode.c
+	@mkdir -p $(BUILD_DIR)
+	$(CC) -m32 -nostdlib -fno-builtin -fno-stack-protector -nostartfiles \
+	    -nodefaultlibs -Wall -Wextra -Werror -O2 -std=c11 \
+	    -ffreestanding -fno-pie -c $< -o $@
+
+$(BUILD_DIR)/usermode_syscall.o: $(SRC_DIR)/usermode_syscall.asm
+	@mkdir -p $(BUILD_DIR)
+	$(ASM) -f elf32 $< -o $@
+
+$(BUILD_DIR)/usermode_syscall_handlers.o: $(SRC_DIR)/usermode_syscall_handlers.c
+	@mkdir -p $(BUILD_DIR)
+	$(CC) -m32 -nostdlib -fno-builtin -fno-stack-protector -nostartfiles \
+	    -nodefaultlibs -Wall -Wextra -Werror -O2 -std=c11 \
+	    -ffreestanding -fno-pie -c $< -o $@
+
+$(BUILD_DIR)/page_fault_handler.o: $(SRC_DIR)/page_fault_handler.c
+	@mkdir -p $(BUILD_DIR)
+	$(CC) -m32 -nostdlib -fno-builtin -fno-stack-protector -nostartfiles \
+	    -nodefaultlibs -Wall -Wextra -Werror -O2 -std=c11 \
+	    -ffreestanding -fno-pie -c $< -o $@
+
+$(BUILD_DIR)/boot.o: $(SRC_DIR)/boot.asm
+	@mkdir -p $(BUILD_DIR)
+	$(ASM) -f elf32 $< -o $@
+
 # Create bootable ISO
 iso: $(ISO)
 $(ISO): $(KERNEL)
@@ -152,6 +188,10 @@ run-int: $(BUILD_DIR)/floppy.img
 run-sys: $(BUILD_DIR)/floppy.img
 	$(QEMU) -fda $(BUILD_DIR)/floppy.img -monitor stdio
 
+# Run kernel with user space in QEMU
+run-user: $(BUILD_DIR)/floppy.img
+	$(QEMU) -fda $(BUILD_DIR)/floppy.img -monitor stdio
+
 # Run protected mode ISO in QEMU
 run-iso-pm: $(ISO_PM)
 	$(QEMU) -cdrom $(ISO_PM) -monitor stdio
@@ -170,11 +210,11 @@ debug: $(KERNEL)
 	gdb -ex "target remote localhost:1234" -ex "symbol-file $(KERNEL)"
 
 # Create floppy disk image with bootloader and kernel
-floppy: $(BOOTLOADER) $(KERNEL_SYS)
+floppy: $(BOOTLOADER) $(KERNEL_USER)
 	@mkdir -p $(BUILD_DIR)
 	dd if=/dev/zero of=$(BUILD_DIR)/floppy.img bs=512 count=2880
 	dd if=$(BOOTLOADER) of=$(BUILD_DIR)/floppy.img bs=512 count=1 conv=notrunc
-	dd if=$(KERNEL_SYS) of=$(BUILD_DIR)/floppy.img bs=512 count=60 seek=2 conv=notrunc
+	dd if=$(KERNEL_USER) of=$(BUILD_DIR)/floppy.img bs=512 count=60 seek=2 conv=notrunc
 
 # Create bootable ISO for protected mode system
 iso-pm: $(ISO_PM)
@@ -216,8 +256,9 @@ init-dirs:
 # Help
 help:
 	@echo "Available targets:"
-	@echo "  all          - Build kernel with system calls (default)"
+	@echo "  all          - Build kernel with user space (default)"
 	@echo "  bootloader   - Build MBR bootloader"
+	@echo "  kernel-user  - Build kernel with user space"
 	@echo "  kernel-sys   - Build kernel with system calls"
 	@echo "  kernel-int   - Build kernel with interrupts"
 	@echo "  kernel-pm    - Build protected mode kernel"
@@ -229,6 +270,7 @@ help:
 	@echo "  run-pm       - Run protected mode kernel in QEMU"
 	@echo "  run-int      - Run kernel with interrupts in QEMU"
 	@echo "  run-sys      - Run kernel with system calls in QEMU"
+	@echo "  run-user     - Run kernel with user space in QEMU"
 	@echo "  run-iso      - Run ISO in QEMU (legacy)"
 	@echo "  run-iso-pm   - Run protected mode ISO in QEMU"
 	@echo "  debug        - Debug with GDB"
@@ -238,4 +280,4 @@ help:
 	@echo "  install-deps - Install system dependencies"
 	@echo "  help         - Show this help"
 
-.PHONY: all iso run run-iso run-int run-sys debug clean test-tools init-dirs install-deps help
+.PHONY: all iso run run-iso run-int run-sys run-user debug clean test-tools init-dirs install-deps help
