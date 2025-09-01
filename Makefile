@@ -49,6 +49,10 @@ ADVANCED_OBJS := $(BUILD_DIR)/boot.o $(BUILD_DIR)/kernel_advanced.o $(BUILD_DIR)
 KERNEL_NETWORK := $(BUILD_DIR)/kernel_network.bin
 NETWORK_OBJS := $(BUILD_DIR)/boot.o $(BUILD_DIR)/kernel_network.o $(BUILD_DIR)/ne2000_driver.o $(BUILD_DIR)/interrupt_handlers.o $(BUILD_DIR)/isr.o $(BUILD_DIR)/usermode_syscall.o $(BUILD_DIR)/usermode_syscall_handlers.o $(BUILD_DIR)/page_fault_handler.o
 
+# Stage 8 device drivers kernel
+KERNEL_DRIVERS := $(BUILD_DIR)/kernel_drivers.bin
+DRIVERS_OBJS := $(BUILD_DIR)/boot.o $(BUILD_DIR)/kernel_drivers.o $(BUILD_DIR)/interrupt_handlers.o $(BUILD_DIR)/isr.o $(BUILD_DIR)/usermode_syscall.o $(BUILD_DIR)/usermode_syscall_handlers.o $(BUILD_DIR)/page_fault_handler.o
+
 # Bootloader target
 BOOTLOADER := $(BUILD_DIR)/bootloader.bin
 
@@ -63,7 +67,7 @@ ISO_PM := $(BUILD_DIR)/tos_pm.iso
 ISO := $(BUILD_DIR)/tos.iso
 
 # Default target
-all: $(KERNEL_NETWORK)
+all: $(KERNEL_DRIVERS)
 
 # Build bootloader (16-bit real mode)
 $(BOOTLOADER): $(SRC_DIR)/bootloader.asm
@@ -108,6 +112,12 @@ $(KERNEL_NETWORK): $(NETWORK_OBJS)
 	@mkdir -p $(BUILD_DIR)
 	$(LD) -m elf_i386 -nostdlib -Ttext 0x10000 -o $(BUILD_DIR)/kernel_network.elf $(NETWORK_OBJS)
 	$(OBJCOPY) -O binary $(BUILD_DIR)/kernel_network.elf $@
+
+# Build device drivers kernel (32-bit)
+$(KERNEL_DRIVERS): $(DRIVERS_OBJS)
+	@mkdir -p $(BUILD_DIR)
+	$(LD) -m elf_i386 -nostdlib -Ttext 0x10000 -o $(BUILD_DIR)/kernel_drivers.elf $(DRIVERS_OBJS)
+	$(OBJCOPY) -O binary $(BUILD_DIR)/kernel_drivers.elf $@
 
 # Build legacy kernel (64-bit multiboot)
 $(KERNEL): $(OBJECTS) $(SRC_DIR)/linker.ld
@@ -201,6 +211,12 @@ $(BUILD_DIR)/ne2000_driver.o: $(SRC_DIR)/ne2000_driver.c
 	    -nodefaultlibs -Wall -Wextra -Werror -O2 -std=c11 \
 	    -ffreestanding -fno-pie -c $< -o $@
 
+$(BUILD_DIR)/kernel_drivers.o: $(SRC_DIR)/kernel_drivers.c
+	@mkdir -p $(BUILD_DIR)
+	$(CC) -m32 -nostdlib -fno-builtin -fno-stack-protector -nostartfiles \
+	    -nodefaultlibs -Wall -Wextra -Werror -O2 -std=c11 \
+	    -ffreestanding -fno-pie -c $< -o $@
+
 # Create bootable ISO
 iso: $(ISO)
 $(ISO): $(KERNEL)
@@ -230,6 +246,10 @@ run-sys: $(BUILD_DIR)/floppy.img
 run-user: $(BUILD_DIR)/floppy.img
 	$(QEMU) -fda $(BUILD_DIR)/floppy.img -monitor stdio
 
+# Run kernel with device drivers in QEMU
+run-drivers: $(BUILD_DIR)/floppy.img
+	$(QEMU) -fda $(BUILD_DIR)/floppy.img -monitor stdio
+
 # Run protected mode ISO in QEMU
 run-iso-pm: $(ISO_PM)
 	$(QEMU) -cdrom $(ISO_PM) -monitor stdio
@@ -248,11 +268,11 @@ debug: $(KERNEL)
 	gdb -ex "target remote localhost:1234" -ex "symbol-file $(KERNEL)"
 
 # Create floppy disk image with bootloader and kernel
-floppy: $(BOOTLOADER) $(KERNEL_NETWORK)
+floppy: $(BOOTLOADER) $(KERNEL_DRIVERS)
 	@mkdir -p $(BUILD_DIR)
 	dd if=/dev/zero of=$(BUILD_DIR)/floppy.img bs=512 count=2880
 	dd if=$(BOOTLOADER) of=$(BUILD_DIR)/floppy.img bs=512 count=1 conv=notrunc
-	dd if=$(KERNEL_NETWORK) of=$(BUILD_DIR)/floppy.img bs=512 count=60 seek=2 conv=notrunc
+	dd if=$(KERNEL_DRIVERS) of=$(BUILD_DIR)/floppy.img bs=512 count=60 seek=2 conv=notrunc
 
 # Create bootable ISO for protected mode system
 iso-pm: $(ISO_PM)
@@ -294,13 +314,14 @@ init-dirs:
 # Help
 help:
 	@echo "Available targets:"
-	@echo "  all          - Build kernel with user space (default)"
+	@echo "  all          - Build kernel with device drivers (default)"
 	@echo "  bootloader   - Build MBR bootloader"
 	@echo "  kernel-user  - Build kernel with user space"
 	@echo "  kernel-sys   - Build kernel with system calls"
 	@echo "  kernel-int   - Build kernel with interrupts"
 	@echo "  kernel-pm    - Build protected mode kernel"
 	@echo "  kernel       - Build legacy multiboot kernel"
+	@echo "  kernel-drivers - Build kernel with device drivers"
 	@echo "  floppy       - Create floppy disk image"
 	@echo "  iso          - Create bootable ISO (legacy)"
 	@echo "  iso-pm       - Create bootable ISO (protected mode)"
@@ -309,6 +330,7 @@ help:
 	@echo "  run-int      - Run kernel with interrupts in QEMU"
 	@echo "  run-sys      - Run kernel with system calls in QEMU"
 	@echo "  run-user     - Run kernel with user space in QEMU"
+	@echo "  run-drivers  - Run kernel with device drivers in QEMU"
 	@echo "  run-iso      - Run ISO in QEMU (legacy)"
 	@echo "  run-iso-pm   - Run protected mode ISO in QEMU"
 	@echo "  debug        - Debug with GDB"
