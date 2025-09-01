@@ -29,14 +29,37 @@ ASM_SOURCES := $(wildcard $(SRC_DIR)/*.asm)
 OBJECTS := $(patsubst $(SRC_DIR)/%.c, $(BUILD_DIR)/%.o, $(C_SOURCES))
 OBJECTS += $(patsubst $(SRC_DIR)/%.asm, $(BUILD_DIR)/%.o, $(ASM_SOURCES))
 
-# Target files
+# Bootloader target
+BOOTLOADER := $(BUILD_DIR)/bootloader.bin
+
+# Kernel target (32-bit protected mode)
+KERNEL_PM := $(BUILD_DIR)/kernel_pm.bin
+
+# Legacy kernel target (64-bit multiboot)
 KERNEL := $(BUILD_DIR)/kernel.bin
+
+# ISO targets
+ISO_PM := $(BUILD_DIR)/tos_pm.iso
 ISO := $(BUILD_DIR)/tos.iso
 
 # Default target
-all: $(KERNEL)
+all: $(KERNEL_PM)
 
-# Build kernel
+# Build bootloader (16-bit real mode)
+$(BOOTLOADER): $(SRC_DIR)/bootloader.asm
+	@mkdir -p $(BUILD_DIR)
+	$(ASM) -f bin -o $@ $<
+
+# Build protected mode kernel (32-bit)
+$(KERNEL_PM): $(SRC_DIR)/kernel_pm.c
+	@mkdir -p $(BUILD_DIR)
+	$(CC) -m32 -nostdlib -fno-builtin -fno-stack-protector -nostartfiles \
+	    -nodefaultlibs -Wall -Wextra -Werror -O2 -std=c11 \
+	    -ffreestanding -fno-pie -c $< -o $(BUILD_DIR)/kernel_pm.o
+	$(LD) -m elf_i386 -nostdlib -Ttext 0x10000 -o $(BUILD_DIR)/kernel_pm.elf $(BUILD_DIR)/kernel_pm.o
+	$(OBJCOPY) -O binary $(BUILD_DIR)/kernel_pm.elf $@
+
+# Build legacy kernel (64-bit multiboot)
 $(KERNEL): $(OBJECTS) $(SRC_DIR)/linker.ld
 	@mkdir -p $(BUILD_DIR)
 	$(LD) $(LDFLAGS) -o $@ $(OBJECTS)
@@ -64,11 +87,19 @@ $(ISO): $(KERNEL)
 	echo '}' >> $(ISO_DIR)/boot/grub/grub.cfg
 	grub-mkrescue -o $(ISO) $(ISO_DIR)
 
-# Run in QEMU
+# Run protected mode kernel in QEMU with floppy
+run-pm: $(BUILD_DIR)/floppy.img
+	$(QEMU) -fda $(BUILD_DIR)/floppy.img -monitor stdio
+
+# Run protected mode ISO in QEMU
+run-iso-pm: $(ISO_PM)
+	$(QEMU) -cdrom $(ISO_PM) -monitor stdio
+
+# Run in QEMU (legacy multiboot)
 run: $(KERNEL)
 	$(QEMU) -kernel $(KERNEL) -monitor stdio
 
-# Run ISO in QEMU
+# Run ISO in QEMU (legacy)
 run-iso: $(ISO)
 	$(QEMU) -cdrom $(ISO) -monitor stdio
 
@@ -76,6 +107,27 @@ run-iso: $(ISO)
 debug: $(KERNEL)
 	$(QEMU) -kernel $(KERNEL) -s -S -monitor stdio &
 	gdb -ex "target remote localhost:1234" -ex "symbol-file $(KERNEL)"
+
+# Create floppy disk image with bootloader and kernel
+floppy: $(BOOTLOADER) $(KERNEL_PM)
+	@mkdir -p $(BUILD_DIR)
+	dd if=/dev/zero of=$(BUILD_DIR)/floppy.img bs=512 count=2880
+	dd if=$(BOOTLOADER) of=$(BUILD_DIR)/floppy.img bs=512 count=1 conv=notrunc
+	dd if=$(KERNEL_PM) of=$(BUILD_DIR)/floppy.img bs=512 count=20 seek=2 conv=notrunc
+
+# Create bootable ISO for protected mode system
+iso-pm: $(ISO_PM)
+$(ISO_PM): $(BOOTLOADER) $(KERNEL_PM)
+	@mkdir -p $(ISO_DIR)/boot/grub
+	cp $(BOOTLOADER) $(ISO_DIR)/boot/
+	cp $(KERNEL_PM) $(ISO_DIR)/boot/kernel.bin
+	echo 'set timeout=0' > $(ISO_DIR)/boot/grub/grub.cfg
+	echo 'set default=0' >> $(ISO_DIR)/boot/grub/grub.cfg
+	echo 'menuentry "Tiny OS (Protected Mode)" {' >> $(ISO_DIR)/boot/grub/grub.cfg
+	echo '    multiboot /boot/bootloader.bin' >> $(ISO_DIR)/boot/grub/grub.cfg
+	echo '    boot' >> $(ISO_DIR)/boot/grub/grub.cfg
+	echo '}' >> $(ISO_DIR)/boot/grub/grub.cfg
+	grub-mkrescue -o $(ISO_PM) $(ISO_DIR)
 
 # Clean build artifacts
 clean:
@@ -103,10 +155,17 @@ init-dirs:
 # Help
 help:
 	@echo "Available targets:"
-	@echo "  all          - Build kernel"
-	@echo "  iso          - Create bootable ISO"
-	@echo "  run          - Run kernel in QEMU"
-	@echo "  run-iso      - Run ISO in QEMU"
+	@echo "  all          - Build protected mode kernel (default)"
+	@echo "  bootloader   - Build MBR bootloader"
+	@echo "  kernel-pm    - Build protected mode kernel"
+	@echo "  kernel       - Build legacy multiboot kernel"
+	@echo "  floppy       - Create floppy disk image"
+	@echo "  iso          - Create bootable ISO (legacy)"
+	@echo "  iso-pm       - Create bootable ISO (protected mode)"
+	@echo "  run          - Run kernel in QEMU (legacy)"
+	@echo "  run-pm       - Run protected mode kernel in QEMU"
+	@echo "  run-iso      - Run ISO in QEMU (legacy)"
+	@echo "  run-iso-pm   - Run protected mode ISO in QEMU"
 	@echo "  debug        - Debug with GDB"
 	@echo "  clean        - Clean build artifacts"
 	@echo "  test-tools   - Test tools availability"
