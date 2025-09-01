@@ -45,6 +45,10 @@ USERMODE_OBJS := $(BUILD_DIR)/boot.o $(BUILD_DIR)/kernel_usermode.o $(BUILD_DIR)
 KERNEL_ADVANCED := $(BUILD_DIR)/kernel_advanced.bin
 ADVANCED_OBJS := $(BUILD_DIR)/boot.o $(BUILD_DIR)/kernel_advanced.o $(BUILD_DIR)/interrupt_handlers.o $(BUILD_DIR)/isr.o $(BUILD_DIR)/usermode_syscall.o $(BUILD_DIR)/usermode_syscall_handlers.o $(BUILD_DIR)/page_fault_handler.o
 
+# Stage 7 network kernel
+KERNEL_NETWORK := $(BUILD_DIR)/kernel_network.bin
+NETWORK_OBJS := $(BUILD_DIR)/boot.o $(BUILD_DIR)/kernel_network.o $(BUILD_DIR)/interrupt_handlers.o $(BUILD_DIR)/isr.o $(BUILD_DIR)/usermode_syscall.o $(BUILD_DIR)/usermode_syscall_handlers.o $(BUILD_DIR)/page_fault_handler.o
+
 # Bootloader target
 BOOTLOADER := $(BUILD_DIR)/bootloader.bin
 
@@ -59,7 +63,7 @@ ISO_PM := $(BUILD_DIR)/tos_pm.iso
 ISO := $(BUILD_DIR)/tos.iso
 
 # Default target
-all: $(KERNEL_ADVANCED)
+all: $(KERNEL_NETWORK)
 
 # Build bootloader (16-bit real mode)
 $(BOOTLOADER): $(SRC_DIR)/bootloader.asm
@@ -98,6 +102,12 @@ $(KERNEL_ADVANCED): $(ADVANCED_OBJS)
 	@mkdir -p $(BUILD_DIR)
 	$(LD) -m elf_i386 -nostdlib -Ttext 0x10000 -o $(BUILD_DIR)/kernel_advanced.elf $(ADVANCED_OBJS)
 	$(OBJCOPY) -O binary $(BUILD_DIR)/kernel_advanced.elf $@
+
+# Build network kernel (32-bit)
+$(KERNEL_NETWORK): $(NETWORK_OBJS)
+	@mkdir -p $(BUILD_DIR)
+	$(LD) -m elf_i386 -nostdlib -Ttext 0x10000 -o $(BUILD_DIR)/kernel_network.elf $(NETWORK_OBJS)
+	$(OBJCOPY) -O binary $(BUILD_DIR)/kernel_network.elf $@
 
 # Build legacy kernel (64-bit multiboot)
 $(KERNEL): $(OBJECTS) $(SRC_DIR)/linker.ld
@@ -179,6 +189,12 @@ $(BUILD_DIR)/kernel_advanced.o: $(SRC_DIR)/kernel_advanced.c
 	    -nodefaultlibs -Wall -Wextra -Werror -O2 -std=c11 \
 	    -ffreestanding -fno-pie -c $< -o $@
 
+$(BUILD_DIR)/kernel_network.o: $(SRC_DIR)/kernel_network.c
+	@mkdir -p $(BUILD_DIR)
+	$(CC) -m32 -nostdlib -fno-builtin -fno-stack-protector -nostartfiles \
+	    -nodefaultlibs -Wall -Wextra -Werror -O2 -std=c11 \
+	    -ffreestanding -fno-pie -c $< -o $@
+
 # Create bootable ISO
 iso: $(ISO)
 $(ISO): $(KERNEL)
@@ -226,11 +242,11 @@ debug: $(KERNEL)
 	gdb -ex "target remote localhost:1234" -ex "symbol-file $(KERNEL)"
 
 # Create floppy disk image with bootloader and kernel
-floppy: $(BOOTLOADER) $(KERNEL_ADVANCED)
+floppy: $(BOOTLOADER) $(KERNEL_NETWORK)
 	@mkdir -p $(BUILD_DIR)
 	dd if=/dev/zero of=$(BUILD_DIR)/floppy.img bs=512 count=2880
 	dd if=$(BOOTLOADER) of=$(BUILD_DIR)/floppy.img bs=512 count=1 conv=notrunc
-	dd if=$(KERNEL_ADVANCED) of=$(BUILD_DIR)/floppy.img bs=512 count=60 seek=2 conv=notrunc
+	dd if=$(KERNEL_NETWORK) of=$(BUILD_DIR)/floppy.img bs=512 count=60 seek=2 conv=notrunc
 
 # Create bootable ISO for protected mode system
 iso-pm: $(ISO_PM)
